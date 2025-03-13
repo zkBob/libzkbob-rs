@@ -57,14 +57,13 @@ impl<P: PoolParams> MerkleTree<WebDatabase, P> {
 #[cfg(feature = "native")]
 impl<P: PoolParams> MerkleTree<NativeDatabase, P> {
     pub fn new_native(
-        config: DatabaseConfig,
+        _config: DatabaseConfig,
         path: &str,
         params: P,
     ) -> std::io::Result<MerkleTree<NativeDatabase, P>> {
-        let db = NativeDatabase::open(&DatabaseConfig{
-            columns: NUM_COLUMNS,
-            ..config
-        } , path)?;
+        let c= DatabaseConfig::with_columns(NUM_COLUMNS);
+        
+        let db = NativeDatabase::open(&c, path)?;
 
         Ok(Self::new(db, params))
     }
@@ -87,8 +86,8 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
                 .unwrap(),
             _ => {
                 let mut cur_next_index = 0;
-                for (k, _v) in db.iter(0) {
-                    let (height, index) = Self::parse_node_key(&k);
+                for k_v in db.iter(0) {
+                    let (height, index) = Self::parse_node_key(&k_v.unwrap().0);
         
                     if height == 0 && index >= cur_next_index {
                         cur_next_index = Self::calc_next_index(index);
@@ -112,8 +111,8 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
                 .ok(),
             _ => {
                 let mut cur_first_index = u64::MAX;
-                for (k, _v) in db.iter(0) {
-                    let (height, index) = Self::parse_node_key(&k);
+                for k_v in db.iter(0) {
+                    let (height, index) = Self::parse_node_key(&k_v.unwrap().0);
         
                     if height == 0 && index < cur_first_index {
                         cur_first_index = index;
@@ -787,7 +786,7 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
         let keys: Vec<(u32, u64)> = self
             .db
             .iter(0)
-            .map(|(key, _value)| Self::parse_node_key(&key))
+            .map(|k_v| Self::parse_node_key(&k_v.unwrap().0))
             .collect();
         // remove unnecessary nodes
         for (height, index) in keys {
@@ -870,13 +869,14 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
         let mut remove_batch = self.db.transaction();
         self.db
             .iter(DbCols::Leaves as u32)
-            .for_each(|(key, _)| {
-                let (height, index) = Self::parse_node_key(&key);
+            .for_each(|k_v| {
+                let data = k_v.unwrap();
+                let (height, index) = Self::parse_node_key(&data.0);
                 //let left_index = index << height;
                 let right_index = (index + 1) << height;
                 if right_index > rollback_index {
-                    remove_batch.delete(DbCols::Leaves as u32, &key);
-                    remove_batch.delete(DbCols::TempLeaves as u32, &key);
+                    remove_batch.delete(DbCols::Leaves as u32, &data.0);
+                    remove_batch.delete(DbCols::TempLeaves as u32, &data.0);
                     //self.remove_batched(&mut remove_batch, height, index);
                 }
             });
@@ -969,14 +969,14 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
 
         self.db
             .iter(DbCols::Leaves as u32)
-            .for_each(|(key, _)| {
-                wipe_batch.delete(DbCols::Leaves as u32, &key); 
+            .for_each(|k_v| {
+                wipe_batch.delete(DbCols::Leaves as u32, &k_v.unwrap().0); 
             });
 
         self.db
             .iter(DbCols::TempLeaves as u32)
-            .for_each(|(key, _)| {
-                wipe_batch.delete(DbCols::TempLeaves as u32, &key); 
+            .for_each(|k_v| {
+                wipe_batch.delete(DbCols::TempLeaves as u32, &k_v.unwrap().0); 
             });
 
 
@@ -992,7 +992,10 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
     pub fn get_all_nodes(&self) -> Vec<Node<P::Fr>> {
         self.db
             .iter(0)
-            .map(|(key, value)| Self::build_node(&key, &value))
+            .map(|k_v| {
+                let data = k_v.unwrap();
+                Self::build_node(&data.0, &data.1)
+            })
             .collect()
     }
 
@@ -1004,7 +1007,10 @@ impl<D: KeyValueDB, P: PoolParams> MerkleTree<D, P> {
         let prefix = (0u32).to_be_bytes();
         self.db
             .iter_with_prefix(0, &prefix)
-            .map(|(key, value)| Self::build_node(&key, &value))
+            .map(|k_v| {
+                let data = k_v.unwrap();
+                Self::build_node(&data.0, &data.1)
+            })
             .filter(|node| node.index >= index)
             .collect()
     }
