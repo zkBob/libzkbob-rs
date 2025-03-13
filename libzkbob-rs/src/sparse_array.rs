@@ -89,8 +89,14 @@ where
     }
 
     pub fn iter(&self) -> SparseArrayIter<T> {
+        let res = self.db.iter(0);
+        let res = res.map(|k_v| {
+            let data = k_v.unwrap();
+            (data.0.into_boxed_slice(), data.1.into_boxed_slice())
+        });
+
         SparseArrayIter {
-            inner: self.db.iter(0),
+            inner: Box::new(res),
             _phantom: Default::default(),
         }
     }
@@ -128,8 +134,8 @@ where
         //batch.delete_prefix(0, &[][..]);
         self.db
             .iter(0)
-            .for_each(|(key, _)| {
-                batch.delete(0_u32, &key);
+            .for_each(|k_v| {
+                batch.delete(0_u32, &k_v.unwrap().0);
             });
         self.db.write(batch).unwrap();
     }
