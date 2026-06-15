@@ -8,7 +8,7 @@ use libzeropool::{
     constants,
     fawkes_crypto::{
         borsh::{BorshDeserialize, BorshSerialize},
-        ff_uint::{Num, Uint, NumRepr},
+        ff_uint::Num,
         native::ecc::EdwardsPoint,
     },
     native::boundednum::BoundedNum,

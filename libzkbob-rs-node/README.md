@@ -24,6 +24,34 @@ $ yarn build
 
 This command uses the [cargo-cp-artifact](https://github.com/neon-bindings/cargo-cp-artifact) utility to run the Rust build and copy the built library into `./index.node`.
 
+## Troubleshooting
+
+### `librocksdb-sys` bindgen panic on macOS
+
+On recent macOS/Xcode versions, `yarn install` or `yarn build` can fail while building `librocksdb-sys` with an error like:
+
+```text
+error: failed to run custom build command for `librocksdb-sys v6.20.3`
+
+thread 'main' panicked at .../bindgen-0.59.2/src/ir/context.rs:
+"enum_(unnamed_at_rocksdb/include/rocksdb/c_h_854_1)" is not a valid Ident
+```
+
+`libzkbob-rs-node` enables the native RocksDB backend through `libzkbob-rs`, which pulls `kvdb-rocksdb`, `rocksdb`, `librocksdb-sys`, and `bindgen`. The pinned `bindgen` version is old and can panic when used with newer Apple `libclang`.
+
+If Homebrew LLVM 14 is installed, run the build with its `libclang`:
+
+```sh
+$ LIBCLANG_PATH=/opt/homebrew/opt/llvm@14/lib yarn install
+```
+
+For a persistent local shell setup:
+
+```sh
+$ export LIBCLANG_PATH=/opt/homebrew/opt/llvm@14/lib
+$ yarn install
+```
+
 ## Example
 ```javascript
 const zp = require('libzkbob-rs-node');

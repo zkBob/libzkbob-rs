@@ -1,9 +1,7 @@
 use libzkbob_rs::libzeropool::{
     constants,
-    fawkes_crypto::{backend::bellman_groth16::engines::Bn256},
-    native::{
-        params::{PoolBN256, PoolParams as PoolParamsTrait},
-    },
+    fawkes_crypto::backend::bellman_groth16::engines::Bn256,
+    native::params::{PoolBN256, PoolParams as PoolParamsTrait},
     POOL_PARAMS,
 };
 use serde::Serialize;
@@ -11,7 +9,6 @@ use wasm_bindgen::{prelude::*, JsCast};
 
 pub use crate::{
     client::*,
-    proof::*,
     state::{Transaction, UserState},
     ts_types::*,
 };

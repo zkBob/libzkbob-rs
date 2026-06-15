@@ -119,9 +119,19 @@ export interface IAddressComponents {
     is_pool_valid: boolean;
 }
 
+export interface IExtraItem {
+    leaf_index: number;
+    pad_length: number;
+    need_encrypt: boolean;
+    data: Uint8Array;
+}
+
 export interface ITxBaseFields {
-    fee: string;
-    data?: Uint8Array;
+    proxy: Uint8Array;
+    prover: Uint8Array;
+    proxy_fee: string;
+    prover_fee: string;
+    data: IExtraItem[];
 }
 
 export interface IDepositData extends ITxBaseFields {
@@ -274,14 +284,8 @@ extern "C" {
     #[wasm_bindgen(typescript_type = "ITransferData")]
     pub type ITransferData;
 
-    #[wasm_bindgen(typescript_type = "ITransferData[]")]
-    pub type IMultiTransferData;
-
     #[wasm_bindgen(typescript_type = "IWithdrawData")]
     pub type IWithdrawData;
-
-    #[wasm_bindgen(typescript_type = "IWithdrawData[]")]
-    pub type IMultiWithdrawData;
 
     #[wasm_bindgen(typescript_type = "DecryptedMemo")]
     pub type DecryptedMemo;

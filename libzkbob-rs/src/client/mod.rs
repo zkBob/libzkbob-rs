@@ -93,23 +93,61 @@ pub struct TxOutput<Fr: PrimeField> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TxOperator<Fr: PrimeField> {
+    pub proxy_address: Vec<u8>,
+    pub prover_address: Vec<u8>,
+    pub proxy_fee: TokenAmount<Fr>,
+    pub prover_fee: TokenAmount<Fr>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtraItem {
+    pub leaf_index: u8, // encrypted items will use associated account\note key
+                        // if leaf doesn't exist the item cannot be encrypted
+    pub pad_length: u16,  // how many random bytes should be add before the data
+    pub need_encrypt: bool,
+    pub data: Vec<u8>,  // the rust library doesn't know about the item
+                        // content and interpret it just as a byte array
+}
+
+impl<Fr: PrimeField> TxOperator<Fr> {
+    pub fn serialize(&self, dst: &mut Vec<u8>, is_obsolete_format: bool) {
+        if is_obsolete_format {
+            let raw_fee: u64 = self.total_fee().try_into().unwrap();
+            dst.write_all(&raw_fee.to_be_bytes()).unwrap();
+        } else {
+            dst.append(&mut self.proxy_address.clone());
+            dst.append(&mut self.prover_address.clone());
+            let raw_proxy_fee: u64 = self.proxy_fee.to_num().try_into().unwrap();
+            let raw_prover_fee: u64 = self.prover_fee.to_num().try_into().unwrap();
+            dst.write_all(&raw_proxy_fee.to_be_bytes()).unwrap();
+            dst.write_all(&raw_prover_fee.to_be_bytes()).unwrap();
+        }
+    }
+
+    pub fn total_fee(&self) -> Num<Fr> {
+        self.proxy_fee.to_num() + self.prover_fee.to_num()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum TxType<Fr: PrimeField> {
-    // fee, data, tx_outputs
-    Transfer(TokenAmount<Fr>, Vec<u8>, Vec<TxOutput<Fr>>),
-    // fee, data, deposit_amount
-    Deposit(TokenAmount<Fr>, Vec<u8>, TokenAmount<Fr>),
-    // fee, data, deposit_amount, deadline, holder
+    // operator, extra_data, tx_outputs
+    Transfer(TxOperator<Fr>, Vec<ExtraItem>, Vec<TxOutput<Fr>>),
+    // operator, extra_data, deposit_amount
+    Deposit(TxOperator<Fr>, Vec<ExtraItem>, TokenAmount<Fr>),
+    // operator, extra_data, deposit_amount, deadline, holder
     DepositPermittable(
-        TokenAmount<Fr>,
-        Vec<u8>,
+        TxOperator<Fr>,
+        Vec<ExtraItem>,
         TokenAmount<Fr>,
         u64,
         Vec<u8>
     ),
-    // fee, data, withdraw_amount, to, native_amount, energy_amount
+    // operator, extra_data, withdraw_amount, to, native_amount, energy_amount
     Withdraw(
-        TokenAmount<Fr>,
-        Vec<u8>,
+        TxOperator<Fr>,
+        Vec<ExtraItem>,
         TokenAmount<Fr>,
         Vec<u8>,
         TokenAmount<Fr>,
@@ -119,6 +157,7 @@ pub enum TxType<Fr: PrimeField> {
 
 pub struct UserAccount<D: KeyValueDB, P: PoolParams> {
     pub pool_id: u32,
+    pub is_obsolete_pool: bool,
     pub keys: Keys<P>,
     pub params: P,
     pub state: State<D, P>,
@@ -132,11 +171,12 @@ where
     P::Fr: 'static,
 {
     /// Initializes UserAccount with a spending key that has to be an element of the prime field Fs (p = 6554484396890773809930967563523245729705921265872317281365359162392183254199).
-    pub fn new(sk: Num<P::Fs>, pool_id: u32, state: State<D, P>, params: P) -> Self {
+    pub fn new(sk: Num<P::Fs>, pool_id: u32, is_obsolete_pool: bool, state: State<D, P>, params: P) -> Self {
         let keys = Keys::derive(sk, &params);
 
         UserAccount {
             pool_id,
+            is_obsolete_pool,
             keys,
             state,
             params,
@@ -145,9 +185,9 @@ where
     }
 
     /// Same as constructor but accepts arbitrary data as spending key.
-    pub fn from_seed(seed: &[u8], pool_id: u32, state: State<D, P>, params: P) -> Self {
+    pub fn from_seed(seed: &[u8], pool_id: u32, is_obsolete_pool: bool, state: State<D, P>, params: P) -> Self {
         let sk = reduce_sk(seed);
-        Self::new(sk, pool_id, state, params)
+        Self::new(sk, pool_id, is_obsolete_pool, state, params)
     }
 
     fn generate_address_components(
@@ -328,37 +368,33 @@ where
                 .unwrap_or_else(|| self.state.tree.next_index())
         }));
 
-        let (fee, tx_data, user_data) = {
+        let (fee, tx_data, _user_data) = {
             let mut tx_data: Vec<u8> = vec![];
             match &tx {
-                TxType::Deposit(fee, user_data, _) => {
-                    let raw_fee: u64 = fee.to_num().try_into().unwrap();
-                    tx_data.write_all(&raw_fee.to_be_bytes()).unwrap();
-                    (fee, tx_data, user_data)
-                }
-                TxType::DepositPermittable(fee, user_data, _, deadline, holder) => {
-                    let raw_fee: u64 = fee.to_num().try_into().unwrap();
+                TxType::Deposit(operator, user_data, _) => {
+                    operator.serialize(&mut tx_data, self.is_obsolete_pool);
 
-                    tx_data.write_all(&raw_fee.to_be_bytes()).unwrap();
+                    (operator.total_fee(), tx_data, user_data)
+                }
+                TxType::DepositPermittable(operator, user_data, _, deadline, holder) => {
+                    operator.serialize(&mut tx_data, self.is_obsolete_pool);
                     tx_data.write_all(&deadline.to_be_bytes()).unwrap();
                     tx_data.append(&mut holder.clone());
                     
-                    (fee, tx_data, user_data)
+                    (operator.total_fee(), tx_data, user_data)
                 }
-                TxType::Transfer(fee, user_data, _) => {
-                    let raw_fee: u64 = fee.to_num().try_into().unwrap();
-                    tx_data.write_all(&raw_fee.to_be_bytes()).unwrap();
-                    (fee, tx_data, user_data)
-                }
-                TxType::Withdraw(fee, user_data, _, reciever, native_amount, _) => {
-                    let raw_fee: u64 = fee.to_num().try_into().unwrap();
-                    let raw_native_amount: u64 = native_amount.to_num().try_into().unwrap();
+                TxType::Transfer(operator, user_data, _) => {
+                    operator.serialize(&mut tx_data, self.is_obsolete_pool);
 
-                    tx_data.write_all(&raw_fee.to_be_bytes()).unwrap();
+                    (operator.total_fee(), tx_data, user_data)
+                }
+                TxType::Withdraw(operator, user_data, _, reciever, native_amount, _) => {
+                    operator.serialize(&mut tx_data, self.is_obsolete_pool);
+                    let raw_native_amount: u64 = native_amount.to_num().try_into().unwrap();
                     tx_data.write_all(&raw_native_amount.to_be_bytes()).unwrap();
                     tx_data.append(&mut reciever.clone());
 
-                    (fee, tx_data, user_data)
+                    (operator.total_fee(), tx_data, user_data)
                 }
             }
         };
@@ -424,7 +460,7 @@ where
                 (0, (0..).map(|_| zero_note()).take(constants::OUT).collect())
             };
 
-        let mut delta_value = -fee.as_num();
+        let mut delta_value = -fee;
         // By default all account energy will be withdrawn on withdraw tx
         let mut delta_energy = Num::ZERO;
 
@@ -438,11 +474,11 @@ where
         }
         let new_balance = match &tx {
             TxType::Transfer(_, _, _) => {
-                if input_value.to_uint() >= (output_value + fee.as_num()).to_uint() {
-                    input_value - output_value - fee.as_num()
+                if input_value.to_uint() >= (output_value + fee).to_uint() {
+                    input_value - output_value - fee
                 } else {
                     return Err(CreateTxError::InsufficientBalance(
-                        (output_value + fee.as_num()).to_string(),
+                        (output_value + fee).to_string(),
                         input_value.to_string(),
                     ));
                 }
@@ -499,7 +535,10 @@ where
             // No need to include all the zero notes in the encrypted transaction
             let out_notes = &out_notes[0..num_real_out_notes];
 
-            cipher::encrypt(&entropy, &keys.kappa, out_account, out_notes, &self.params)
+            match self.is_obsolete_pool {
+                true => cipher::_encrypt_old(&entropy, keys.eta, out_account, out_notes, &self.params), // ECDH scheme
+                false => cipher::encrypt(&entropy, &keys.kappa, out_account, out_notes, &self.params),  // symmetric scheme
+            }
         };
 
         // Hash input account + notes filling remaining space with non-hashed zeroes
@@ -553,18 +592,25 @@ where
 
         let root: Num<P::Fr> = tree.get_root_optimistic(&mut virtual_nodes, &update_boundaries);
 
-        // memo = tx_specific_data, ciphertext, user_defined_data
+        // TODO: prepare (encrypt) extra data
+
+        // memo = tx_specific_data, ciphertext, extra_data
         let mut memo_data = {
             let tx_data_size = tx_data.len();
+            let ciphertext_size_size = if self.is_obsolete_pool { 0 } else { 2 };
             let ciphertext_size = ciphertext.len();
-            let user_data_size = user_data.len();
-            Vec::with_capacity(tx_data_size + ciphertext_size + user_data_size)
+            let user_data_size = 0; //user_data.len();
+            Vec::with_capacity(tx_data_size + ciphertext_size_size + ciphertext_size + user_data_size)
         };
 
         #[allow(clippy::redundant_clone)]
         memo_data.append(&mut tx_data.clone());
+        if !self.is_obsolete_pool {
+            // add message size for new memo format
+            memo_data.extend((ciphertext.len() as u16).to_be_bytes());
+        }
         memo_data.extend(&ciphertext);
-        memo_data.append(&mut user_data.clone());
+        // TODO: append extra data here!
 
         let memo_hash = keccak256(&memo_data);
         let memo = Num::from_uint_reduced(NumRepr(Uint::from_big_endian(&memo_hash)));
@@ -655,11 +701,18 @@ mod tests {
     #[test]
     fn test_create_tx_deposit_zero() {
         let state = State::init_test(POOL_PARAMS.clone());
-        let acc = UserAccount::new(Num::ZERO, 0, state, POOL_PARAMS.clone());
+        let acc = UserAccount::new(Num::ZERO, 0, false, state, POOL_PARAMS.clone());
+
+        let op = TxOperator {
+            proxy_address: vec![],
+            prover_address: vec![],
+            proxy_fee: BoundedNum::ZERO,
+            prover_fee: BoundedNum::ZERO,
+        };
 
         acc.create_tx(
             TxType::Deposit(
-                BoundedNum::ZERO,
+                op,
                 vec![],
                 BoundedNum::ZERO,
             ),
@@ -672,11 +725,18 @@ mod tests {
     #[test]
     fn test_create_tx_deposit_one() {
         let state = State::init_test(POOL_PARAMS.clone());
-        let acc = UserAccount::new(Num::ZERO, 0, state, POOL_PARAMS.clone());
+        let acc = UserAccount::new(Num::ZERO, 0, false, state, POOL_PARAMS.clone());
+
+        let op = TxOperator {
+            proxy_address: vec![],
+            prover_address: vec![],
+            proxy_fee: BoundedNum::ZERO,
+            prover_fee: BoundedNum::ONE,
+        };
 
         acc.create_tx(
             TxType::Deposit(
-                BoundedNum::new(Num::ZERO),
+                op,
                 vec![],
                 BoundedNum::new(Num::ONE),
             ),
@@ -690,7 +750,7 @@ mod tests {
     #[test]
     fn test_create_tx_transfer_zero() {
         let state = State::init_test(POOL_PARAMS.clone());
-        let acc = UserAccount::new(Num::ZERO, 0, state, POOL_PARAMS.clone());
+        let acc = UserAccount::new(Num::ZERO, 0, false, state, POOL_PARAMS.clone());
 
         let addr = acc.generate_address();
 
@@ -699,8 +759,15 @@ mod tests {
             amount: BoundedNum::new(Num::ZERO),
         };
 
+        let op = TxOperator {
+            proxy_address: vec![],
+            prover_address: vec![],
+            proxy_fee: BoundedNum::ZERO,
+            prover_fee: BoundedNum::ZERO,
+        };
+
         acc.create_tx(
-            TxType::Transfer(BoundedNum::new(Num::ZERO), vec![], vec![out]),
+            TxType::Transfer(op, vec![], vec![out]),
             None,
             None,
         )
@@ -711,7 +778,7 @@ mod tests {
     #[should_panic]
     fn test_create_tx_transfer_one_no_balance() {
         let state = State::init_test(POOL_PARAMS.clone());
-        let acc = UserAccount::new(Num::ZERO, 0, state, POOL_PARAMS.clone());
+        let acc = UserAccount::new(Num::ZERO, 0, false, state, POOL_PARAMS.clone());
 
         let addr = acc.generate_address();
 
@@ -720,8 +787,15 @@ mod tests {
             amount: BoundedNum::new(Num::ONE),
         };
 
+        let op = TxOperator {
+            proxy_address: vec![],
+            prover_address: vec![],
+            proxy_fee: BoundedNum::ZERO,
+            prover_fee: BoundedNum::ZERO,
+        };
+
         acc.create_tx(
-            TxType::Transfer(BoundedNum::new(Num::ZERO), vec![], vec![out]),
+            TxType::Transfer(op, vec![], vec![out]),
             None,
             None,
         )
@@ -733,12 +807,14 @@ mod tests {
         let acc_1 = UserAccount::new(
             Num::ZERO,
             0xffff02,
+            false, 
             State::init_test(POOL_PARAMS.clone()),
             POOL_PARAMS.clone(),
         );
         let acc_2 = UserAccount::new(
             Num::ONE,
             0xffff02,
+            false, 
             State::init_test(POOL_PARAMS.clone()),
             POOL_PARAMS.clone(),
         );
@@ -761,6 +837,7 @@ mod tests {
         let mut user_account = UserAccount::new(
             Num::ZERO,
             1,
+            false, 
             state,
             POOL_PARAMS.clone()
         );
@@ -812,10 +889,10 @@ mod tests {
 
     #[test]
     fn test_chain_specific_addresses() {
-        let acc_polygon = UserAccount::new(Num::ZERO, 0, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
-        let acc_sepolia = UserAccount::new(Num::ZERO, 0, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
-        let acc_optimism = UserAccount::new(Num::ZERO, 1, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
-        let acc_optimism_eth = UserAccount::new(Num::ZERO, 2, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
+        let acc_polygon = UserAccount::new(Num::ZERO, 0, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
+        let acc_sepolia = UserAccount::new(Num::ZERO, 0, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
+        let acc_optimism = UserAccount::new(Num::ZERO, 1, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
+        let acc_optimism_eth = UserAccount::new(Num::ZERO, 2, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
 
         assert!(acc_polygon.validate_universal_address("PtfsqyJhA2yvmLtXBm55pkvFDX6XZrRMaib9F1GvwzmU8U4witUf8Jyse5kxBwa"));   // generic without a prefix
         assert!(acc_polygon.validate_universal_address("zkbob:PtfsqyJhA2yvmLtXBm55pkvFDX6XZrRMaib9F1GvwzmU8U4witUf8Jyse5kxBwa")); // generic
@@ -853,13 +930,13 @@ mod tests {
     #[test]
     fn test_chain_specific_address_ownable() {
         let accs = [
-            UserAccount::new(Num::ZERO, 0, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
-            UserAccount::new(Num::ZERO, 1, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
-            UserAccount::new(Num::ZERO, 2, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
-            UserAccount::new(Num::ZERO, 0xffff02, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
-            UserAccount::new(Num::ZERO, 0xffff03, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
+            UserAccount::new(Num::ZERO, 0, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
+            UserAccount::new(Num::ZERO, 1, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
+            UserAccount::new(Num::ZERO, 2, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
+            UserAccount::new(Num::ZERO, 0xffff02, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
+            UserAccount::new(Num::ZERO, 0xffff03, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone()),
         ];
-        let acc2 = UserAccount::new(Num::ONE, 1, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
+        let acc2 = UserAccount::new(Num::ONE, 1, false, State::init_test(POOL_PARAMS.clone()), POOL_PARAMS.clone());
         let pool_addresses: Vec<String> = accs.iter().map(|acc| acc.generate_address()).collect();
         let universal_addresses: Vec<String> = accs.iter().map(|acc| acc.generate_universal_address()).collect();
 
