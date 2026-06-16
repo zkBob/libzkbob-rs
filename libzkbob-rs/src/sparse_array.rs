@@ -88,7 +88,7 @@ where
             .map(|data| T::try_from_slice(data.as_slice()).unwrap())
     }
 
-    pub fn iter(&self) -> SparseArrayIter<T> {
+    pub fn iter(&self) -> SparseArrayIter<'_, T> {
         SparseArrayIter {
             inner: self.db.iter(0),
             _phantom: Default::default(),

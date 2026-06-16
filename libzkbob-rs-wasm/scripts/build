@@ -2,8 +2,8 @@
 
 set -e
 
-RUSTUP_MT_TOOLCHAIN=nightly-2022-12-11
-RUSTUP_ST_TOOLCHAIN=stable-2022-11-03
+RUSTUP_MT_TOOLCHAIN=nightly-2026-02-27
+RUSTUP_ST_TOOLCHAIN=stable-2026-04-16
 PARENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
 
 if ! command -v jq &> /dev/null
