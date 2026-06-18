@@ -5,12 +5,41 @@ set -e
 RUSTUP_MT_TOOLCHAIN=nightly-2026-02-27
 RUSTUP_ST_TOOLCHAIN=stable-2026-04-16
 PARENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
+MT_RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--max-memory=4294967296 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base'
 
 if ! command -v jq &> /dev/null
 then
     echo "jq is required to run this script: https://stedolan.github.io/jq/"
     exit
 fi
+
+if ! command -v wasm-opt &> /dev/null
+then
+    echo "wasm-opt is required to run this script: https://github.com/WebAssembly/binaryen"
+    exit
+fi
+
+function verify_shared_memory () {
+  local wasm_file="$1"
+
+  for feature in --enable-threads --enable-bulk-memory --enable-mutable-globals
+  do
+    if ! wasm-opt --print-features "$wasm_file" 2>/dev/null | grep -q -- "$feature"
+    then
+      echo "$wasm_file is missing $feature"
+      exit 1
+    fi
+  done
+
+  if ! wasm-opt --print "$wasm_file" 2>/dev/null | grep -Eq '\(memory [^)]*[0-9]+ [0-9]+ shared\)'
+  then
+    echo "ERROR: $wasm_file does not define or import bounded shared memory"
+    echo "The multithreaded version of libzkbob-rs-wasm requires shared memory to be enabled"
+    echo "You can disable this check manually in the script."
+    echo "But it's better to validatge what's wrong with your build."
+    exit 1
+  fi
+}
 
 function patch_package_json () {
   sed -i.bak -E "s/\"name\": \"libzkbob-rs-wasm\"/\"name\": \"libzkbob-rs-wasm-$1\"/g" $PARENT_DIR/$1/package.json
@@ -21,7 +50,7 @@ function patch_package_json () {
 # build $name $features $is_mt
 function build () {
   if [ "$3" = true ] ; then	
-    RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals' \
+    RUSTFLAGS="$MT_RUSTFLAGS" \
       rustup run $RUSTUP_MT_TOOLCHAIN \
       wasm-pack build --release --target web -d $1 \
       -- --features $2 -Z build-std=panic_abort,std	
@@ -35,6 +64,10 @@ function build () {
     wasm-opt -o $PARENT_DIR/$1/wasm-opt.wasm --debuginfo -O3 $PARENT_DIR/$1/libzkbob_rs_wasm_bg.wasm && mv $PARENT_DIR/$1/wasm-opt.wasm $PARENT_DIR/$1/libzkbob_rs_wasm_bg.wasm
   else
     wasm-opt -o $PARENT_DIR/$1/wasm-opt.wasm -O3 $PARENT_DIR/$1/libzkbob_rs_wasm_bg.wasm && mv $PARENT_DIR/$1/wasm-opt.wasm $PARENT_DIR/$1/libzkbob_rs_wasm_bg.wasm
+  fi
+
+  if [ "$3" = true ] ; then
+    verify_shared_memory $PARENT_DIR/$1/libzkbob_rs_wasm_bg.wasm
   fi
 
   # Remove invalid typings
